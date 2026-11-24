@@ -87,6 +87,42 @@ function pending(){try{return JSON.parse(localStorage.getItem(DIRTY_KEY)||'{}')|
 function setPending(p){localStorage.setItem(DIRTY_KEY,JSON.stringify(p))}
 function row(date,e,userId){return {user_id:userId,entry_date:date,weight:e.weight??null,waist:e.waist??null,steps:e.steps??null,sleep:e.sleep??null,beers:e.beers??null,snacks:e.snacks??null,lunch:!!e.lunch,dinner:!!e.dinner,walk:!!e.walk,planned:!!e.planned,sleepplan:!!e.sleepplan,notes:e.notes??'',bedtime:e.bedtime||null,...(e.wake_time?{wake_time:e.wake_time}:{}),walk_minutes:e.walk_minutes??null,walk_km:e.walk_km??null,no_evening_snacks:!!e.no_evening_snacks}}
 function entry(r){return {weight:r.weight,waist:r.waist,steps:r.steps,sleep:r.sleep,beers:r.beers,snacks:r.snacks,lunch:r.lunch,dinner:r.dinner,walk:r.walk,planned:r.planned,sleepplan:r.sleepplan,no_evening_snacks:r.no_evening_snacks??false,bedtime:r.bedtime??null,wake_time:r.wake_time??null,walk_minutes:r.walk_minutes??null,walk_km:r.walk_km??null,notes:r.notes||''}}
+
+const PLAN_DIRTY_KEY='viktresa_2026_plan_pending_v1';
+let planRunning=false,planError='';
+async function syncWeekPlan(){
+ if(planRunning||!activeUser||!navigator.onLine)return false;
+ planRunning=true;
+ try{
+  const userId=activeUser.id;
+  const {data:remote,error}=await sb.from('week_plan_progress').select('phase,attempt,phase_started').eq('user_id',userId).maybeSingle();
+  if(error)throw error;
+  const local=window.viktresaWeek.get();
+  const dirty=localStorage.getItem(PLAN_DIRTY_KEY)==='1';
+  if(!remote||dirty){
+   const {error:up}=await sb.from('week_plan_progress').upsert({user_id:userId,phase:local.phase,attempt:local.attempt,phase_started:local.phase_started,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+   if(up)throw up;
+   // Avoid clearing a flag from a newer local edit made while awaiting network.
+   const current=window.viktresaWeek.get();
+   if(JSON.stringify(current)===JSON.stringify(local))localStorage.removeItem(PLAN_DIRTY_KEY);
+  }else{
+   window.viktresaWeek.remote(remote);
+  }
+  planError='';
+  return true;
+ }catch(e){
+  planError=e?.message||'Kunde inte synka veckoplanen';
+  return false;
+ }finally{planRunning=false}
+}
+window.addEventListener('viktresa:planchange',()=>{
+ try{localStorage.setItem(PLAN_DIRTY_KEY,'1')}catch{}
+ if(activeUser){
+  mark('Veckoplan sparad lokalt – synkar…');
+  syncWeekPlan().then(ok=>mark(ok?'Veckoplan synkad med molnet ✓':'Dagboken fungerar, men veckoplanen är bara sparad lokalt: '+planError));
+ }else mark('Veckoplan sparad lokalt – logga in för synk.');
+});
+
 async function sync(){
  if(running||!activeUser)return;
  if(!navigator.onLine){mark('Offline – sparat på enheten, synkar senare.');return}
@@ -118,7 +154,7 @@ async function sync(){
   for(const r of latest||[])result[r.entry_date]=entry(r);
   for(const [date,e] of Object.entries(pending()))result[date]=e;
   window.viktresaBridge.replace(result);
-  mark(Object.keys(pending()).length?'Delvis synkat – vissa ändringar väntar.':'Synkat med molnet ✓');
+  const weekOk=await syncWeekPlan();mark(!weekOk?'Dagboken synkad, men veckoplanen kunde inte synkas: '+(planError||'ingen anslutning'):Object.keys(pending()).length?'Delvis synkat – vissa ändringar väntar.':'Synkat med molnet ✓');
  }catch(e){mark('Sparat lokalt – synk misslyckades: '+(e?.message||'försök igen'))}
  finally{running=false}
 }
